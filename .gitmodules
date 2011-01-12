@@ -7,3 +7,6 @@
 [submodule "deps/pagerduty"]
 	path = deps/pagerduty
 	url = git://github.com/JacobVorreuter/pagerduty.git
+[submodule "deps/erlang_doozer"]
+	path = deps/erlang_doozer
+	url = git://github.com/JacobVorreuter/erlang_doozer.git
