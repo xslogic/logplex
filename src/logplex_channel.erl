@@ -274,7 +274,7 @@ refresh_dns() ->
     ?MODULE:refresh_dns().
 
 get_id() ->
-  Path = "/" ++ binary_to_list(logplex_utils:heorku_domain()) ++ "/channel_id",
+  Path = "/" ++ binary_to_list(logplex_utils:heorku_domain()) ++ "/channelid",
   {ok, PList} = doozer:get(Path, 0),
   NextId = 
     case proplists:get_value(value, PList) of
