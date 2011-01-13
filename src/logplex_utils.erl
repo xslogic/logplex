@@ -106,7 +106,7 @@ heorku_domain() ->
         undefined ->
             Domain = 
                 case os:getenv("HEROKU_DOMAIN") of
-                    false -> <<"">>;
+                    false -> <<"dev">>;
                     Val -> list_to_binary(Val)
                 end,
             put(heroku_domain, Domain),

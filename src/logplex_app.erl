@@ -36,6 +36,7 @@ start(_StartType, _StartArgs) ->
     set_cookie(),
     boot_pagerduty(),
     boot_redis(),
+    application:start(erlang_doozer),
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 stop(_State) ->

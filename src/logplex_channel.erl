@@ -36,13 +36,12 @@ start_link() ->
 	gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 create(ChannelName, AppId, Addon) when is_binary(ChannelName), is_integer(AppId), is_binary(Addon) ->
-    case redis_helper:create_channel(ChannelName, AppId, Addon) of
-        ChannelId when is_integer(ChannelId) ->
-            logplex_grid:publish(?MODULE, {create, ChannelId, ChannelName, AppId, Addon}),
-            ChannelId;
-        Err ->
-            Err
-    end.
+  Id = get_id(),
+  Props = [{name, ChannelName}, {app_id, AppId}, {addon, Addon}],
+  Json = mochijson2:encode({struct, Props}),
+  {ok, _} = doozer:set("0", create_path(channels) ++ integer_to_list(Id), iolist_to_binary(Json)),
+  Id.
+
 
 delete(ChannelId) when is_integer(ChannelId) ->
     case lookup(ChannelId) of
@@ -118,7 +117,16 @@ init([]) ->
     ets:new(?MODULE, [protected, named_table, set, {keypos, 2}]),
     ets:new(logplex_channel_tokens, [protected, named_table, bag, {keypos, 3}]),
     ets:new(logplex_channel_drains, [protected, named_table, bag, {keypos, 3}]),
-    populate_cache(),
+    Env = binary_to_list(logplex_utils:heorku_domain()),
+    ChannelPath = "/" ++ Env ++ "/channels/*",
+    %% TokenPath = "/" ++ Env ++ "/channels/*/tokens/*",
+    %% DrainPath = "/" ++ Env ++ "/channels/*/drains/*",
+    lists:foreach(
+      fun(Path) ->
+          {sent, _} = doozer:walk(self(), Path),
+          {sent, _} = doozer:watch(self(), Path)
+      end, [ChannelPath]),
+    %% populate_cache(),
     spawn_link(fun refresh_dns/0),
     {ok, []}.
 
@@ -191,6 +199,22 @@ handle_info({delete_drain, DrainId}, State) ->
     ets:match_delete(logplex_channel_drains, #drain{id=DrainId, channel_id='_', resolved_host='_', host='_', port='_'}),
     {noreply, State};
 
+handle_info({Op, valid, _, PropList}, State) ->
+  case lists:member(Op, [watch, walk, monitor]) of
+    true ->
+      {Path, Value} = {proplists:get_value(path, PropList), proplists:get_value(value, PropList)},
+      [Id | _] = lists:reverse(string:tokens(Path, "/")),
+      Cas = proplists:get_value(cas, PropList),
+      case Cas of
+        "0" -> delete_new("channels", Id);
+        _ -> 
+          {struct, Props} = mochijson2:decode(Value),
+          create_new("channels", Id, Props)
+      end;
+    _ -> void
+  end,    
+  {noreply, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -248,3 +272,46 @@ refresh_dns() ->
         end
     end || #drain{host=Host}=Drain <- ets:tab2list(logplex_channel_drains)],
     ?MODULE:refresh_dns().
+
+get_id() ->
+  Path = "/" ++ binary_to_list(logplex_utils:heorku_domain()) ++ "/channel_id",
+  {ok, PList} = doozer:get(Path, 0),
+  NextId = 
+    case proplists:get_value(value, PList) of
+      <<>> -> 1;
+      X -> list_to_integer(binary_to_list(X)) + 1
+    end,
+  case doozer:set(proplists:get_value(cas, PList), Path, list_to_binary(integer_to_list(NextId))) of
+    {ok, _} -> NextId;
+    _ -> get_id()
+  end.
+      
+
+create_path(Type) ->  
+  "/" ++ binary_to_list(logplex_utils:heorku_domain()) ++ "/" ++ atom_to_list(Type) ++ "/".
+      
+create_new("channels", Id, Props) ->
+  ets:insert(?MODULE, #channel{id = Id, 
+                               name = proplists:get_value(<<"name">>, Props), 
+                               app_id = proplists:get_value(<<"app_id">>, Props), 
+                               addon = proplists:get_value(<<"addon">>, Props)});
+create_new("tokens", Id, Props) ->
+  ets:insert(logplex_channel_tokens, #token{id = Id, 
+                                            name = proplists:get_value(name, Props), 
+                                            channel_id = proplists:get_value(channel_id, Props), 
+                                            app_id = proplists:get_value(app_id, Props), 
+                                            addon = proplists:get_value(addon, Props)});
+
+create_new("drains", Id, Props) ->
+  ets:insert(logplex_channel_drains, #drain{id = Id, 
+                                            channel_id = proplists:get_value(channel_id, Props), 
+                                            resolved_host = proplists:get_value(resolved_host, Props), 
+                                            host = proplists:get_value(host, Props), 
+                                            port = proplists:get_value(port, Props)}).
+
+delete_new("channels", ChannelId) ->
+  ets:delete(?MODULE, ChannelId),
+  ets:match_delete(logplex_channel_tokens, #token{id='_', channel_id=ChannelId, name='_', app_id='_', addon='_'}),
+  ets:match_delete(logplex_channel_drains, #drain{id='_', channel_id=ChannelId, resolved_host='_', host='_', port='_'}).
+
+  
